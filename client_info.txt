@@ -1,0 +1,151 @@
+package xraft
+
+import (
+	"bufio"
+	"sync"
+)
+
+type CommandState uint8
+
+type CommandInfo struct {
+	command ClientCommand
+	state   CommandState
+}
+
+const (
+	PRE_ACCEPTED CommandState = iota
+	ACCEPTED
+	COMMITTED
+	NONE
+)
+
+type ClientInfo struct {
+	cmu           *sync.Mutex
+	clientId      int
+	FastLogs      []*CommandInfo
+	FastTerm      []int // 每次fast模式下的log的停止位置
+	FastTermIndex []int // 上一个Raft模式下见到的最大的那个日志（尽可能的避免空洞）
+	CommitUpTo    int
+	Reply         *bufio.Writer
+	active        bool // 是否可以服务fast
+}
+
+func NewClient(cid int) *ClientInfo {
+	c := &ClientInfo{
+		cmu:      new(sync.Mutex),
+		clientId: cid,
+		// TODO: remove magic number
+		FastLogs:      make([]*CommandInfo, 0, 8000000),
+		FastTerm:      make([]int, 0, 1000),
+		FastTermIndex: make([]int, 0, 1000),
+		CommitUpTo:    0,
+		Reply:         nil,
+		active:        true,
+	}
+	c.FastTerm = append(c.FastTerm, 0)
+	c.FastTermIndex = append(c.FastTermIndex, 0)
+	return c
+}
+
+func (c *ClientInfo) CheckCollision(cmd *ClientCommand) bool {
+	c.cmu.Lock()
+	defer c.cmu.Unlock()
+
+	for i := c.CommitUpTo + 1; i < len(c.FastLogs); i++ {
+		if c.FastLogs[i] != nil && Conflict(cmd, &c.FastLogs[i].command) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *ClientInfo) idToIndex(id int) int {
+	term := len(c.FastTerm) - 1
+
+	for ; term >= 0; term-- {
+		if id >= c.FastTermIndex[term] {
+			break
+		}
+	}
+	id2 := id - c.FastTermIndex[term]
+	return c.FastTerm[term] + id2
+}
+
+func (c *ClientInfo) indexToId(index int) int {
+	term := len(c.FastTerm) - 1
+	for ; term >= 0; term-- {
+		if index >= c.FastTerm[term] {
+			break
+		}
+	}
+	offset := index - c.FastTerm[term]
+	return offset + c.FastTermIndex[term]
+}
+
+func (c *ClientInfo) CommitTo(id int) {
+	if id < 0 {
+		return
+	}
+	c.cmu.Lock()
+	defer c.cmu.Unlock()
+	index := c.idToIndex(id)
+	if c.active && index > c.CommitUpTo {
+		c.CommitUpTo = index
+	}
+}
+
+func (c *ClientInfo) Record(cmd *ClientCommand, id int) (*CommandInfo, bool) {
+	cinfo := &CommandInfo{*cmd, PRE_ACCEPTED}
+	c.cmu.Lock()
+	defer c.cmu.Unlock()
+	if !c.active {
+		return nil, false
+	}
+	le := len(c.FastLogs)
+	var ret *CommandInfo
+	index := c.idToIndex(id)
+	if index < le {
+		ret = c.FastLogs[index]
+		if ret == nil {
+			c.FastLogs[index] = cinfo
+		}
+	} else {
+		ret = nil
+		for i := 0; i < index-le; i++ {
+			c.FastLogs = append(c.FastLogs, nil)
+		}
+		c.FastLogs = append(c.FastLogs, cinfo)
+	}
+	return ret, true
+}
+
+func (c *ClientInfo) Accept(id int) {
+	index := c.idToIndex(id)
+	c.FastLogs[index].state = ACCEPTED
+}
+
+func (c *ClientInfo) GetCmd(id int) *CommandInfo {
+	index := c.idToIndex(id)
+	return c.FastLogs[index]
+}
+
+func (c *ClientInfo) Collect() ([]*CommandInfo, int) {
+	c.cmu.Lock()
+	defer c.cmu.Unlock()
+	c.active = false
+	return c.FastLogs[c.CommitUpTo+1:], c.indexToId(c.CommitUpTo) + 1
+}
+
+func (c *ClientInfo) Active(fastTerm int) {
+	c.cmu.Lock()
+	defer c.cmu.Unlock()
+	// c.FastTerm = append(c.FastTerm, len(c.FastLogs))
+	// c.CommitUpTo = len(c.FastLogs)
+	c.active = true
+}
+
+func (c *ClientInfo) POUN(lastRIndex int) {
+	if lastRIndex > c.FastTermIndex[len(c.FastTermIndex)-1] {
+		c.FastTermIndex[len(c.FastTermIndex)-1] = lastRIndex
+	}
+}

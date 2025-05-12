@@ -1,0 +1,3 @@
+go build -o server main.go
+./server -s=true -addrs="http://192.168.0.204:7010,http://192.168.0.206:7010,http://192.168.0.203:7010" -id=0
+dell02 powerleader1 dell01

@@ -1,0 +1,74 @@
+syntax = "proto3";
+
+option go_package = "github/Fischer0522/xraft/xraft/pb";
+package  pb;
+
+
+message Command {
+    uint32 Op = 1;
+    string Key = 2;
+    string Val = 3;
+}
+
+message RequestID {
+  uint64 SeqId = 1;
+  uint64 clientID = 2;
+}
+
+// this is a comment
+message Request {
+  uint64 SeqId = 1;
+  uint64 clientID = 2;
+  uint32 ReqOp = 3;
+  Command Command = 4;
+}
+
+
+message RequestReply{
+    uint32 ReqReply = 1;
+    string Val = 2;
+    uint32 OpReply = 3;
+    uint32 Fterm = 4;
+    repeated RequestID conflict_reqs = 5;
+}
+
+message Message {
+  uint64 clientID = 1;
+  uint64 mSeqId = 2;
+  Request Request = 3;
+  uint64 Commit_cmd = 4;
+}
+
+// First Batched Fast cmd
+message FBFCmd {
+  uint32 FTerm = 1;
+  repeated Request cmds = 2;
+
+  // the last raft cmd before change to fast
+  uint64 clientID = 3;
+  uint64 SeqId = 4;
+}
+
+
+message MessageReply {
+  uint64  mSeqId = 1;
+  uint32  Leader = 2;
+  RequestReply RR = 3; 
+}
+
+
+message AbortReq {
+  uint32 FTerm = 1;
+  RequestID reqID = 2;
+}
+
+message ping_text {
+}
+
+
+service xRaftServer {
+  rpc Propose_grpc(Message) returns (MessageReply);
+  rpc AbortReq_grpc(AbortReq) returns (RequestReply);
+  rpc StartFast(FBFCmd) returns (MessageReply);
+  rpc ping(Message) returns(MessageReply);
+}

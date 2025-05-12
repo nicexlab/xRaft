@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+option go_package = "/curp/curp_proto";
+package  curp_proto;
+
+
+
+
+
+message CurpClientCommand {
+    uint32 Op = 1;
+    uint64 ClientId = 2;
+    uint64 SeqId = 3;
+    string Key = 4;
+    string Value = 5;
+}
+
+message CurpReply {
+    string Content = 1;
+    uint32 StatusCode = 2;
+    uint64 SeqId = 3;
+}
+
+message LeaderAck {
+
+}
+
+message LeaderReply {
+    uint32 IsLeader = 1;
+}
+
+ message ProposeId {
+    uint64 ClientId = 1;
+    uint64 SeqId = 2;
+}
+
+
+service Curp {
+  rpc Propose (CurpClientCommand) returns (CurpReply);
+  rpc WaitSynced (ProposeId) returns (CurpReply);
+  rpc IsLeader (LeaderAck) returns (LeaderReply);
+}
