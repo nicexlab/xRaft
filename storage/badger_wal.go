@@ -2,10 +2,13 @@ package storage
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/dgraph-io/badger/v4"
 	"go.etcd.io/etcd/raft/v3/raftpb"
 )
+
+const badgerWALStateKey = "state"
 
 type BadgerWAL struct {
 	path string
@@ -26,14 +29,23 @@ func NewBadgerWAL(dbPath string) (*BadgerWAL, error) {
 	return store, nil
 }
 
+func (s *BadgerWAL) Close() error {
+	return s.db.Close()
+}
+
+func (s *BadgerWAL) Destroy() error {
+	if err := s.Close(); err != nil {
+		return err
+	}
+	return os.RemoveAll(s.path)
+}
+
 func (s *BadgerWAL) Append(entries []raftpb.Entry) error {
 	for _, entry := range entries {
 		key := encodeKey(&entry)
-		err := s.db.Update(func(txn *badger.Txn) error {
-			err := txn.Set(key, entry.Data)
-			return err
-		})
-		if err != nil {
+		if err := s.db.Update(func(txn *badger.Txn) error {
+			return txn.Set(key, entry.Data)
+		}); err != nil {
 			return err
 		}
 	}
@@ -41,22 +53,16 @@ func (s *BadgerWAL) Append(entries []raftpb.Entry) error {
 }
 
 func (s *BadgerWAL) SaveHardState(state raftpb.HardState) error {
-	key := "state"
-	err := s.db.Update(func(txn *badger.Txn) error {
-		err := txn.Set([]byte(key), []byte(state.String()))
-		return err
+	return s.db.Update(func(txn *badger.Txn) error {
+		return txn.Set([]byte(badgerWALStateKey), []byte(state.String()))
 	})
-	return err
 }
 
 func (s *BadgerWAL) Save(state raftpb.HardState, entries []raftpb.Entry) error {
-	err := s.SaveHardState(state)
-	if err != nil {
+	if err := s.SaveHardState(state); err != nil {
 		return err
 	}
-	err = s.Append(entries)
-	return err
-
+	return s.Append(entries)
 }
 
 func encodeKey(entry *raftpb.Entry) []byte {

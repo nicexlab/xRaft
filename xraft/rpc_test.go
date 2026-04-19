@@ -55,7 +55,7 @@ type cluster_grpc struct {
 
 // 	p, _, _ := conn.NewParticipants_2PC(0, kv)
 // 	defer p.Close()
-// 	go conn.Startgrpc(p, serverAddr)
+// 	go conn.StartGRPCServer(p, serverAddr)
 
 // 	client := NewGrpcClient([]string{serverAddr}, "client-1", 1)
 

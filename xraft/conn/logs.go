@@ -11,19 +11,19 @@ type fastLogs struct {
 	mu   sync.Mutex
 }
 
-func NewFastLogs() *fastLogs {
+func newFastLogs() *fastLogs {
 	l := &fastLogs{logs: make([]*ResultedCommand, 0), cfi: -1, mu: sync.Mutex{}}
 	return l
 }
 
-func (l *fastLogs) Append(rcmd *ResultedCommand) {
+func (l *fastLogs) append(rcmd *ResultedCommand) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	l.logs = append(l.logs, rcmd)
 }
 
-func (l *fastLogs) GetUncommittedTxs() (int, []*ResultedCommand) {
+func (l *fastLogs) getUncommittedTxs() (int, []*ResultedCommand) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -38,7 +38,7 @@ func (l *fastLogs) GetUncommittedTxs() (int, []*ResultedCommand) {
 	return len(l.logs), nil
 }
 
-func (l *fastLogs) GetUncommittedTail(deep int) (int, []*ResultedCommand) {
+func (l *fastLogs) getUncommittedTail(deep int) (int, []*ResultedCommand) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -55,7 +55,7 @@ func (l *fastLogs) GetUncommittedTail(deep int) (int, []*ResultedCommand) {
 	}
 }
 
-func (l *fastLogs) PersistenceKey() {
+func (l *fastLogs) clear() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -63,7 +63,7 @@ func (l *fastLogs) PersistenceKey() {
 	l.cfi = -1
 }
 
-func (l *fastLogs) FixUncommittedTxs(start int, txs []*ResultedCommand) error {
+func (l *fastLogs) fixUncommittedTxs(start int, txs []*ResultedCommand) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 

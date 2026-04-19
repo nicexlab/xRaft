@@ -11,38 +11,37 @@ import (
 )
 
 type xraftServer interface {
-	AbortReq(cmdID request.RequestID, FTerm uint32) (reply *pb.RequestReply)
+	AbortReq(cmdID request.RequestID, fTerm uint32) (reply *pb.RequestReply)
 	Propose(mess *pb.Message) *pb.MessageReply
 }
 
 type Static struct {
-	fastPath      int
-	slowPath      int
-	conflict      int
-	batched_block int
-	resend_time   int
+	fastPath     int
+	slowPath     int
+	conflict     int
+	batchedBlock int
+	resendTime   int
 }
 
 func (s *Static) String() string {
-	return fmt.Sprintf("fastpath: %v, slowpath %v, conflict %v, processed in batched %v, blocked times %v\n", s.fastPath, s.slowPath, s.conflict, s.batched_block, s.resend_time)
+	return fmt.Sprintf("fastpath: %v, slowpath %v, conflict %v, processed in batched %v, blocked times %v\n", s.fastPath, s.slowPath, s.conflict, s.batchedBlock, s.resendTime)
 }
 
 type roundResult uint8
 
 const (
-	fast_succeed roundResult = iota
-	fast_resend
-	fast_conflict // 副本检测到冲突， 需要考虑进行slow 或者 commit
-	slow_succeed  // 在slow中被处理了
-	batched_process_when_blocked
+	fastSucceed roundResult = iota
+	fastResend
+	fastConflict // 副本检测到冲突， 需要考虑进行slow 或者 commit
+	slowSucceed  // 在slow中被处理了
+	batchedProcessWhenBlocked
 
-	time_out
-	round_error
+	timeoutResult
 )
 
-type PeerReply struct {
+type peerReply struct {
 	reply  *pb.MessageReply
-	peerid int
+	peerID int
 }
 
 // Client-side communication proxy
@@ -51,12 +50,12 @@ type Coordinator struct { // 这个结构负责client向peers的2PC过程
 	peers    []xraftServer
 	ClientID uint64
 	// txsCache_pre    map[uint64]*register // 暂存 prepare的tx
-	has_commit   bool
-	commmit_info uint64 // 暂存 上一个request中 commit的cmd
+	hasCommit  bool
+	commitInfo uint64 // 暂存 上一个request中 commit的cmd
 	// txsCache_abo    map[uint64]*register // 暂存 abo的tx
 	// txsCache_slo    map[uint64]*register
 	logger *zap.SugaredLogger
-	mSeqId uint64
+	mSeqID uint64
 	static Static
 
 	// mu sync.Mutex
@@ -66,12 +65,12 @@ func (co *Coordinator) Static() string {
 	return co.static.String()
 }
 
-func Init_Coordinator(servers []xraftServer, id int) *Coordinator {
+func newCoordinator(servers []xraftServer, id int) *Coordinator {
 	co := &Coordinator{
 		peerNum: len(servers),
 		peers:   servers,
 
-		mSeqId: 0,
+		mSeqID: 0,
 		logger: xlog.InitLogger().Named(fmt.Sprintf("client-%v", id)),
 		static: Static{fastPath: 0, slowPath: 0, conflict: 0},
 		// mu:       sync.Mutex{},
@@ -81,16 +80,16 @@ func Init_Coordinator(servers []xraftServer, id int) *Coordinator {
 	return co
 }
 
-func (co *Coordinator) WarpFastRequest(R *pb.Request) *pb.Message {
+func (co *Coordinator) wrapFastRequest(req *pb.Request) *pb.Message {
 	mess := &pb.Message{}
-	mess.Request = R
+	mess.Request = req
 
 	// co.mu.Lock()
-	mess.MSeqId = co.mSeqId
-	co.mSeqId++
-	if co.has_commit {
-		mess.CommitCmd = co.commmit_info
-		co.has_commit = false
+	mess.MSeqId = co.mSeqID
+	co.mSeqID++
+	if co.hasCommit {
+		mess.CommitCmd = co.commitInfo
+		co.hasCommit = false
 	}
 	// co.mu.Unlock()
 	mess.ClientID = uint64(co.ClientID)
@@ -98,69 +97,70 @@ func (co *Coordinator) WarpFastRequest(R *pb.Request) *pb.Message {
 	return mess
 }
 
-func (co *Coordinator) WarpSlowRequest(R *pb.Request) *pb.Message {
+func (co *Coordinator) wrapSlowRequest(req *pb.Request) *pb.Message {
 	mess := &pb.Message{}
-	mess.Request = R
+	mess.Request = req
 
 	// co.mu.Lock()
-	mess.MSeqId = co.mSeqId
-	co.mSeqId++
+	mess.MSeqId = co.mSeqID
+	co.mSeqID++
 	// co.mu.Unlock()
 	return mess
 }
 
-func (co *Coordinator) UpdateCommit(seqId uint64) {
+func (co *Coordinator) updateCommit(seqID uint64) {
 	// co.mu.Lock()
-	co.commmit_info = seqId
-	co.has_commit = true
+	co.commitInfo = seqID
+	co.hasCommit = true
 	// co.mu.Unlock()
 }
 
-func (co *Coordinator) Submit(R *pb.Request) string {
+func (co *Coordinator) Submit(req *pb.Request) string {
 	var result string
 	var state roundResult
 	var leader int
 	var fterm uint32
 	for {
-		mess := co.WarpFastRequest(R)
-		result, state, leader, fterm = co.Round(mess)
-		if state != fast_resend {
+		mess := co.wrapFastRequest(req)
+		result, state, leader, fterm = co.round(mess)
+		if state != fastResend {
 			break
 		}
-		co.static.resend_time++
+		co.static.resendTime++
 	}
 
-	if state == fast_succeed {
-		co.UpdateCommit(R.SeqId)
-		co.logger.Debugf("%v commit in fast", R.SeqId)
+	if state == fastSucceed {
+		co.updateCommit(req.SeqId)
+		co.logger.Debugf("%v commit in fast", req.SeqId)
 		co.static.fastPath++
 		return result
-	} else if state == slow_succeed { // 在slow中被处理了
-		co.logger.Debugf("%v commit in slow", R.SeqId)
+	} else if state == slowSucceed { // 在slow中被处理了
+		co.logger.Debugf("%v commit in slow", req.SeqId)
 		co.static.slowPath++
 		return result
-	} else if state == fast_conflict {
+	} else if state == fastConflict {
 		co.static.conflict++
-		co.logger.Debugf("abort a req %v", R.SeqId)
-		rr := co.peers[leader].AbortReq(request.RequestID{SeqID: R.SeqId, ClientID: R.ClientID}, fterm)
+		co.logger.Debugf("abort a req %v", req.SeqId)
+		rr := co.peers[leader].AbortReq(request.RequestID{SeqID: req.SeqId, ClientID: req.ClientID}, fterm)
 		result = rr.Val
-	} else if state == batched_process_when_blocked {
-		co.static.batched_block++
-		co.logger.Debugf("commit in batch %v", R.SeqId)
+	} else if state == batchedProcessWhenBlocked {
+		co.static.batchedBlock++
+		co.logger.Debugf("commit in batch %v", req.SeqId)
 		return result
 	}
 
 	return result
 }
 
-func (co *Coordinator) Round(mess *pb.Message) (string, roundResult, int, uint32) {
-	fastPathChan := make(chan *PeerReply, 5)
-	timeout := time.NewTicker(5 * time.Second)
+func (co *Coordinator) round(mess *pb.Message) (string, roundResult, int, uint32) {
+	fastPathChan := make(chan *peerReply, co.peerNum)
+	timeout := time.NewTimer(5 * time.Second)
+	defer timeout.Stop()
 
 	for i := 0; i < co.peerNum; i++ {
 		go func(id int) {
 			rr := co.peers[id].Propose(mess)
-			fastPathChan <- &PeerReply{reply: rr, peerid: id}
+			fastPathChan <- &peerReply{reply: rr, peerID: id}
 		}(i)
 	}
 
@@ -171,13 +171,13 @@ func (co *Coordinator) Round(mess *pb.Message) (string, roundResult, int, uint32
 		select {
 		case fastResult := <-fastPathChan:
 			receiveCount++
-			replies[fastResult.peerid] = fastResult.reply
+			replies[fastResult.peerID] = fastResult.reply
 			if receiveCount == co.peerNum {
 				return co.processFastResult(replies)
 			}
 		case <-timeout.C:
 			fmt.Printf("timeout !!\n")
-			return "", time_out, -1, 0
+			return "", timeoutResult, -1, 0
 		}
 	}
 }
@@ -187,61 +187,61 @@ func reqIDEqual(id1 *pb.RequestID, id2 *pb.RequestID) bool {
 }
 
 func (co *Coordinator) processFastResult(replies []*pb.MessageReply) (string, roundResult, int, uint32) {
-	all_accept := true
-	all_fast := true
+	allAccept := true
+	allFast := true
 
-	same_conflicts := true
-	same_fterm := true
+	sameConflicts := true
+	sameFTerm := true
 
-	var FTerm uint32 = 0
+	var fTerm uint32
 
-	all_fast_no_conflict := true
+	allFastNoConflict := true
 
 	for i := range replies {
 		if replies[i].RR.ReqReply != uint32(pb.PREPARE_SUCCEED) {
-			all_accept = false
+			allAccept = false
 			if replies[i].RR.ReqReply != uint32(pb.PREPARE_CONFLICT) {
-				all_fast = false
+				allFast = false
 			} else { // 有Prepare_conflict发生
-				all_fast_no_conflict = false
+				allFastNoConflict = false
 			}
 		}
 	}
 
-	FTerm = replies[0].RR.Fterm
+	fTerm = replies[0].RR.Fterm
 	for i := 1; i < len(replies); i++ {
-		if replies[i].RR.Fterm != FTerm {
-			same_fterm = false
+		if replies[i].RR.Fterm != fTerm {
+			sameFTerm = false
 			break
 		}
 	}
 
 	for i := 1; i < len(replies); i++ {
 		if len(replies[i].RR.ConflictReqs) != len(replies[0].RR.ConflictReqs) {
-			same_conflicts = false
+			sameConflicts = false
 			break
 		}
 		for j := range replies[i].RR.ConflictReqs {
 			if !reqIDEqual(replies[i].RR.ConflictReqs[j], replies[0].RR.ConflictReqs[j]) {
-				same_conflicts = false
+				sameConflicts = false
 				break
 			}
 		}
-		if !same_conflicts {
+		if !sameConflicts {
 			break
 		}
 	}
 
-	if all_accept {
-		if same_fterm {
-			return replies[0].RR.Val, fast_succeed, 0, FTerm // 快速路径无冲突成功
+	if allAccept {
+		if sameFTerm {
+			return replies[0].RR.Val, fastSucceed, 0, fTerm // 快速路径无冲突成功
 		} else {
-			return "", fast_resend, 0, FTerm // 全部接受但是有部分副本以错误的fast term接受时需要进行重发
+			return "", fastResend, 0, fTerm // 全部接受但是有部分副本以错误的fast term接受时需要进行重发
 		}
 	}
 
-	if all_fast && same_conflicts && same_fterm { // 当全部处于快速模式，并且以相同的term返回冲突时可以直接commit这个req
-		return replies[0].RR.Val, fast_succeed, 0, FTerm
+	if allFast && sameConflicts && sameFTerm { // 当全部处于快速模式，并且以相同的term返回冲突时可以直接commit这个req
+		return replies[0].RR.Val, fastSucceed, 0, fTerm
 	}
 
 	leader := -1
@@ -256,16 +256,16 @@ func (co *Coordinator) processFastResult(replies []*pb.MessageReply) (string, ro
 
 	switch replies[leader].RR.ReqReply {
 	case uint32(pb.CURRENT_PREAPRE_FAST): // 当前正在准备快速模式， client重发这个请求
-		return "", fast_resend, leader, FTerm
+		return "", fastResend, leader, fTerm
 	case uint32(pb.PREPARE_SUCCEED):
-		if !all_fast && all_fast_no_conflict { // 当不是所有的副本都处于Fast 状态时，如果所有的fast模式下的副本都接受了这个请求，重发这个请求
-			return "", fast_resend, leader, FTerm
+		if !allFast && allFastNoConflict { // 当不是所有的副本都处于Fast 状态时，如果所有的fast模式下的副本都接受了这个请求，重发这个请求
+			return "", fastResend, leader, fTerm
 		}
 	case uint32(pb.SLOW_SUCCEED):
-		return replies[leader].RR.Val, slow_succeed, leader, FTerm
+		return replies[leader].RR.Val, slowSucceed, leader, fTerm
 	case uint32(pb.BATCHED_FAST_SUCCEED):
-		return replies[leader].RR.Val, batched_process_when_blocked, leader, FTerm
+		return replies[leader].RR.Val, batchedProcessWhenBlocked, leader, fTerm
 	}
 
-	return "", fast_conflict, leader, FTerm
+	return "", fastConflict, leader, fTerm
 }

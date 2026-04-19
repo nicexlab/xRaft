@@ -11,16 +11,21 @@ import (
 	"os/signal"
 	"runtime"
 	"runtime/pprof"
+	"strings"
 	"syscall"
 )
 
-type clus_info struct {
-	server_address     []string
-	grpcserver_address []string
+type clusterInfo struct {
+	grpcServerAddress []string
 }
 
-var client_nums int
-var id int
+const defaultClientGRPCAddrs = "192.168.0.203:11041,192.168.0.204:11041,192.168.0.206:11041"
+
+var (
+	clientNums int
+	id         int
+	grpcAddrs  = flag.String("gaddrs", defaultClientGRPCAddrs, "comma-separated grpc server addresses")
+)
 
 func create_pprof() *os.File {
 	f, _ := os.OpenFile("client_cpu.pprof", os.O_CREATE|os.O_RDWR, 0644)
@@ -48,17 +53,20 @@ func stop_pprof(f *os.File) {
 	}
 }
 
+func newClusterInfo(grpcAddrs string) *clusterInfo {
+	return &clusterInfo{
+		grpcServerAddress: strings.Split(grpcAddrs, ","),
+	}
+}
+
 func main() {
-	flag.IntVar(&client_nums, "n", 1, "client_nums")
+	flag.IntVar(&clientNums, "n", 1, "client_nums")
 	flag.IntVar(&id, "id", 0, "client id, start from 0")
 	flag.Parse()
-	clus_info := &clus_info{
-		grpcserver_address: []string{"192.168.0.203:11041", "192.168.0.204:11041", "192.168.0.206:11041"},
-		// grpcserver_address: []string{":8020", ":8021", ":8022"},
-	}
+	cluster := newClusterInfo(*grpcAddrs)
 
-	if client_nums != 1 {
-		clients := make([]*xraft.Client, client_nums)
+	if clientNums != 1 {
+		clients := make([]*xraft.Client, clientNums)
 		defer func() {
 			for i := range clients {
 				fmt.Printf("client %v:", i)
@@ -67,13 +75,13 @@ func main() {
 		}()
 
 		for i := range clients {
-			clients[i] = xraft.NewGrpcClient(clus_info.grpcserver_address, i)
-			go bench_server(fmt.Sprintf(":%v", 9360+i), clients[i])
+			clients[i] = xraft.NewGrpcClient(cluster.grpcServerAddress, i)
+			go benchServer(fmt.Sprintf(":%v", 9360+i), clients[i])
 		}
 	} else {
 
-		client := xraft.NewGrpcClient(clus_info.grpcserver_address, id)
-		go bench_server(fmt.Sprintf(":%v", 9360+id), client)
+		client := xraft.NewGrpcClient(cluster.grpcServerAddress, id)
+		go benchServer(fmt.Sprintf(":%v", 9360+id), client)
 		defer func() {
 			fmt.Printf("client %v:", id)
 			client.Static()
@@ -114,7 +122,7 @@ type Command struct {
 	Value string
 }
 
-func bench_server(port string, client *xraft.Client) {
+func benchServer(port string, client *xraft.Client) {
 	// 监听在本地端口9360
 	listener, err := net.Listen("tcp", port)
 	if err != nil {
@@ -137,23 +145,34 @@ func bench_server(port string, client *xraft.Client) {
 	}
 }
 
+func writeResponse(conn net.Conn, response []byte) {
+	if _, err := conn.Write(response); err != nil {
+		fmt.Println("write response error:", err)
+	}
+}
+
 // 处理请求
 func handleRequest(conn net.Conn, client *xraft.Client) {
+	defer conn.Close()
 
 	buf := make([]byte, 4096)
-	n, _ := conn.Read(buf)
+	n, err := conn.Read(buf)
+	if err != nil {
+		fmt.Println("read request error:", err)
+		return
+	}
 
 	aCmd := &Command{}
 	dec := gob.NewDecoder(bytes.NewReader(buf[:n]))
-	err := dec.Decode(aCmd)
+	err = dec.Decode(aCmd)
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
 	// fmt.Printf("Received: %+v\n", aCmd)
 
-	if aCmd.Op == GET {
-		// call client.get
+	switch aCmd.Op {
+	case GET:
 		key := aCmd.Key
 		value := client.Get(aCmd.Key)
 		cmd := Command{
@@ -167,20 +186,14 @@ func handleRequest(conn net.Conn, client *xraft.Client) {
 			Kvs:   cmds,
 		}
 		buf := resp.Encode()
-		conn.Write(buf)
-	} else if aCmd.Op == PUT {
-		// call client.put
-
+		writeResponse(conn, buf)
+	case PUT:
 		client.Set(aCmd.Key, aCmd.Value)
-
-		conn.Write([]byte("Received PUT Response!"))
-	} else if aCmd.Op == DELETE {
-		// call client.delete
+		writeResponse(conn, []byte("Received PUT Response!"))
+	case DELETE:
 		client.Del(aCmd.Key)
-		conn.Write([]byte("Received!"))
+		writeResponse(conn, []byte("Received DELETE Response!"))
+	default:
+		writeResponse(conn, []byte("Unknown operation"))
 	}
-	// send response to client
-	conn.Write([]byte("Received DELETE Response!"))
-
-	// 使用 Command
 }

@@ -110,7 +110,7 @@ func InitSingleClient(s []*StateMachine, id int) *Client {
 	for i := range peers {
 		peers[i] = s[i].proxy
 	}
-	// co := conn.Init_Coordinator_2PC(client_trans, name)
+	// co := conn.NewLocalCoordinator(client_trans, name)
 	client := newClient(peers, id)
 	return client
 }

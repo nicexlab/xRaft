@@ -18,7 +18,6 @@ package xraft
 import (
 	"context"
 	"fmt"
-	"github/Fischer0522/xraft/storage"
 	"log"
 	"net/http"
 	"net/url"
@@ -66,7 +65,6 @@ type xraftNode struct {
 	node        raft.Node
 	raftStorage *raft.MemoryStorage
 	wal         *wal.WAL
-	badgerWAL   *storage.BadgerWAL
 
 	snapshotter      *snap.Snapshotter
 	snapshotterReady chan *snap.Snapshotter // signals when snapshotter is ready
@@ -96,11 +94,6 @@ func newRaftNode(id int, peers []string, join bool, getSnapshot func() ([]byte, 
 
 	commitC := make(chan *commit)
 	errorC := make(chan error)
-
-	walPath := fmt.Sprintf("xraft-%d.wal", id)
-
-	badgerWAL, _ := storage.NewBadgerWAL(walPath)
-
 	rc := &xraftNode{
 		proposeC:    proposeC,
 		confChangeC: confChangeC,
@@ -116,8 +109,6 @@ func newRaftNode(id int, peers []string, join bool, getSnapshot func() ([]byte, 
 		stopc:       make(chan struct{}),
 		httpstopc:   make(chan struct{}),
 		httpdonec:   make(chan struct{}),
-
-		badgerWAL: badgerWAL,
 
 		logger: zap.NewExample(),
 

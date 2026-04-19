@@ -30,12 +30,12 @@ func TestBadgerRollBackWithOldValue(t *testing.T) {
 	}
 	defer kv.Destroy()
 
-	old_value1, err := kv.PutWithOldValue("key", "value1")
+	oldValue1, err := kv.PutWithOldValue("key", "value1")
 
 	if err == nil {
 		t.Fatal(err)
 	}
-	old_value2, err := kv.PutWithOldValue("key", "value2")
+	oldValue2, err := kv.PutWithOldValue("key", "value2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,14 +46,14 @@ func TestBadgerRollBackWithOldValue(t *testing.T) {
 	}
 	// rollback
 
-	kv.RollbackPutWithOldValue("key", old_value2)
+	kv.RollbackPutWithOldValue("key", oldValue2)
 	if v, err := kv.Get("key"); err != nil {
 		t.Fatal(err)
 	} else if string(v) != "value1" {
 		t.Fatal("value not match")
 	}
 
-	err = kv.RollbackPutWithOldValue("key", old_value1)
+	err = kv.RollbackPutWithOldValue("key", oldValue1)
 	if err != nil {
 		t.Fatal("value not match")
 	}
@@ -79,14 +79,14 @@ func TestBadgerRollBackDeleteWithOldValue(t *testing.T) {
 		t.Fatal("value not match")
 	}
 
-	old_value, _ := kv.DeleteWithOldValue("key")
+	oldValue, _ := kv.DeleteWithOldValue("key")
 	value, err := kv.Get("key2")
 	if err == nil {
 		t.Log(value)
 		t.Fatal("value should not exist")
 	}
 
-	kv.RollbackDeleteWithOldValue("key", old_value)
+	kv.RollbackDeleteWithOldValue("key", oldValue)
 	if v, err := kv.Get("key"); err != nil {
 		t.Fatal(err)
 	} else if string(v) != "value" {
@@ -94,7 +94,7 @@ func TestBadgerRollBackDeleteWithOldValue(t *testing.T) {
 	}
 }
 
-func TestBadgerRollBackspeed(t *testing.T) {
+func TestBadgerRollbackSpeed(t *testing.T) {
 	kv, err := NewBadgerStore("test.db")
 	if err != nil {
 		t.Fatal(err)

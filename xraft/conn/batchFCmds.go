@@ -11,8 +11,8 @@ type batchedFCmds struct {
 	block        bool
 }
 
-func (c *batchedFCmds) startbatch(FTerm uint32) {
-	c.batchRequest.FTerm = FTerm
+func (c *batchedFCmds) startBatch(fTerm uint32) {
+	c.batchRequest.FTerm = fTerm
 	c.batchRequest.Cmds = make([]*pb.Request, 0, 32)
 	c.block = false
 }

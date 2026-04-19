@@ -47,43 +47,41 @@ func (m *MemStore) Delete(k string) error {
 func (m *MemStore) PutWithOldValue(k string, v string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	old_v, ok := m.kv[k]
+	oldValue, ok := m.kv[k]
 	m.kv[k] = v
 	if ok {
-		return old_v, nil
-	} else {
-		return "", fmt.Errorf("key not found")
+		return oldValue, nil
 	}
+	return "", fmt.Errorf("key not found")
 }
 
-func (m *MemStore) RollbackPutWithOldValue(k, old_v string) error {
+func (m *MemStore) RollbackPutWithOldValue(k, oldValue string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if old_v == "" {
+	if oldValue == "" {
 		delete(m.kv, k)
 	} else {
-		m.kv[k] = old_v
+		m.kv[k] = oldValue
 	}
 	return nil
 }
 
-func (m *MemStore) RollbackDeleteWithOldValue(k, old_v string) error {
+func (m *MemStore) RollbackDeleteWithOldValue(k, oldValue string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.kv[k] = old_v
+	m.kv[k] = oldValue
 	return nil
 }
 
 func (m *MemStore) DeleteWithOldValue(k string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	old_v, ok := m.kv[k]
+	oldValue, ok := m.kv[k]
 	delete(m.kv, k)
 	if ok {
-		return old_v, nil
-	} else {
-		return "", fmt.Errorf("key not found")
+		return oldValue, nil
 	}
+	return "", fmt.Errorf("key not found")
 }
 func (m *MemStore) Destroy() {
 	m.kv = make(map[string]string)

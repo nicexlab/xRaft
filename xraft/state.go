@@ -78,7 +78,7 @@ func NewStateMachine_grpc_with_fast_batch(serverAddr string, id int, snapshotter
 	}
 	s.kvStore = kv
 	proxy, SlowPathC, PrepareKeyToFastC := conn.NewParticipants_2PC(id, kv, 3, grpcAddrs)
-	go conn.Startgrpc(proxy, serverAddr) // 启动rpc服务
+	go conn.StartGRPCServer(proxy, serverAddr) // 启动rpc服务
 	s.proxy = proxy
 	go s.server(commitC, statC, errorC, SlowPathC, PrepareKeyToFastC)
 	return s
@@ -111,7 +111,7 @@ func NewStateMachine_grpc(serverAddr string, id int, snapshotter *snap.Snapshott
 	}
 	s.kvStore = kv
 	proxy, SlowPathC, PrepareKeyToFastC := conn.NewParticipants_2PC(id, kv, 3, nil)
-	go conn.Startgrpc(proxy, serverAddr) // 启动rpc服务
+	go conn.StartGRPCServer(proxy, serverAddr) // 启动rpc服务
 	s.proxy = proxy
 	go s.server(commitC, statC, errorC, SlowPathC, PrepareKeyToFastC)
 	return s

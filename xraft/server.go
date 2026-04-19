@@ -20,7 +20,7 @@ func getSnapshotFn() (func() ([]byte, error), <-chan struct{}) {
 
 type peerInfo struct {
 	peers              []string
-	grpcservers        string
+	grpcServer         string
 	commitC            <-chan *commit
 	errorC             <-chan error
 	proposeC           chan string
@@ -61,10 +61,10 @@ func (p *peerInfo) close() (err error) {
 	return err
 }
 
-func RunStateMachine(peers []string, grpcserver string, id int, grpcserver_address []string) (*StateMachine, func() error) {
+func RunStateMachine(peers []string, grpcServer string, id int, grpcServerAddress []string) (*StateMachine, func() error) {
 	peer := &peerInfo{
 		peers:       peers,
-		grpcservers: grpcserver,
+		grpcServer:  grpcServer,
 		proposeC:    make(chan string, 1),
 		stateC:      make(chan raft.StateType, 1),
 		confChangeC: make(chan raftpb.ConfChange, 1),
@@ -75,10 +75,10 @@ func RunStateMachine(peers []string, grpcserver string, id int, grpcserver_addre
 	commitC, errorC, snapReady := newRaftNode(id, peer.peers, false, fn, peer.proposeC, peer.stateC, peer.confChangeC)
 	peer.commitC = commitC
 	peer.errorC = errorC
-	if len(grpcserver_address) != 0 {
-		peer.state = NewStateMachine_grpc_with_fast_batch(peer.grpcservers, id, <-snapReady, peer.proposeC, peer.stateC, peer.commitC, peer.errorC, grpcserver_address)
+	if len(grpcServerAddress) != 0 {
+		peer.state = NewStateMachine_grpc_with_fast_batch(peer.grpcServer, id, <-snapReady, peer.proposeC, peer.stateC, peer.commitC, peer.errorC, grpcServerAddress)
 	} else {
-		peer.state = NewStateMachine_grpc(peer.grpcservers, id, <-snapReady, peer.proposeC, peer.stateC, peer.commitC, peer.errorC)
+		peer.state = NewStateMachine_grpc(peer.grpcServer, id, <-snapReady, peer.proposeC, peer.stateC, peer.commitC, peer.errorC)
 	}
 
 	return peer.state, peer.close

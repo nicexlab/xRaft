@@ -11,8 +11,8 @@ import (
 type RecordType uint16
 
 const (
-	STATE_TYPE RecordType = iota
-	ENTRY_TYPE
+	StateRecord RecordType = iota
+	EntryRecord
 )
 
 type WAL struct {
@@ -22,8 +22,8 @@ type WAL struct {
 	sync    bool
 }
 
-// NewWAL 创建一个新的WAL实例
-func NewWAL(logPath string, Sync bool) (*WAL, error) {
+// NewWAL creates a WAL that appends encoded raft state and entries to logPath.
+func NewWAL(logPath string, syncWrites bool) (*WAL, error) {
 	file, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return nil, err
@@ -32,15 +32,16 @@ func NewWAL(logPath string, Sync bool) (*WAL, error) {
 		file:    file,
 		writer:  bufio.NewWriter(file),
 		logPath: logPath,
+		sync:    syncWrites,
 	}, nil
 }
 
 func (wal *WAL) Save(hardState raftpb.HardState, entries []raftpb.Entry) error {
-	record := make([]byte, 0)
-	record = append(record, byte(STATE_TYPE))
-	record = append(record, *encodeHardState(hardState)...)
-	record = append(record, byte(ENTRY_TYPE))
-	record = append(record, *encodeEntries(entries)...)
+	record := make([]byte, 0, 1+8*3+1)
+	record = append(record, byte(StateRecord))
+	record = append(record, encodeHardState(hardState)...)
+	record = append(record, byte(EntryRecord))
+	record = append(record, encodeEntries(entries)...)
 	_, err := wal.writer.Write(record)
 	if err != nil {
 		return err
@@ -66,16 +67,16 @@ func (wal *WAL) Save(hardState raftpb.HardState, entries []raftpb.Entry) error {
 // 	return nil
 // }
 
-func encodeHardState(hardState raftpb.HardState) *[]byte {
+func encodeHardState(hardState raftpb.HardState) []byte {
 	// three element, term, vote, commit each 8 bytes,represent Uint64
 	buffer := make([]byte, 0, 8*3)
 	buffer = binary.BigEndian.AppendUint64(buffer, hardState.Term)
 	buffer = binary.BigEndian.AppendUint64(buffer, hardState.Vote)
 	buffer = binary.BigEndian.AppendUint64(buffer, hardState.Commit)
-	return &buffer
+	return buffer
 }
 
-func encodeEntries(entries []raftpb.Entry) *[]byte {
+func encodeEntries(entries []raftpb.Entry) []byte {
 	// four element, term, index, type, data
 	buffer := make([]byte, 0)
 	for _, entry := range entries {
@@ -85,7 +86,7 @@ func encodeEntries(entries []raftpb.Entry) *[]byte {
 		buffer = binary.BigEndian.AppendUint64(buffer, uint64(len(entry.Data)))
 		buffer = append(buffer, entry.Data...)
 	}
-	return &buffer
+	return buffer
 }
 
 // Close 关闭WAL文件

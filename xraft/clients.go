@@ -22,7 +22,7 @@ type proxy interface {
 
 type Client struct {
 	proxy          proxy
-	seqId          uint64
+	seqID          uint64
 	pingfs         []func() int64
 	pingAndWritefs []func(int) int64
 }
@@ -33,17 +33,17 @@ func (c *Client) Static() {
 
 func newClient(peers []*conn.Participants_2PC, id int) *Client {
 	c := &Client{
-		proxy: conn.Init_Coordinator_2PC(peers, id),
+		proxy: conn.NewLocalCoordinator(peers, id),
 	}
 	return c
 }
 
 func NewGrpcClient(peers []string, id int) *Client {
-	coor, ping_funcs, pingAndWrite_funcs := conn.Init_Coordinator_Grpc(peers, id)
+	coor, pingFuncs, pingAndWriteFuncs := conn.NewGRPCCoordinator(peers, id)
 	c := &Client{
 		proxy:          coor,
-		pingfs:         ping_funcs,
-		pingAndWritefs: pingAndWrite_funcs,
+		pingfs:         pingFuncs,
+		pingAndWritefs: pingAndWriteFuncs,
 	}
 	return c
 }
@@ -81,7 +81,7 @@ func (c *Client) Get(key string) string {
 	}
 
 	req := &pb.Request{
-		SeqId:   atomic.AddUint64(&c.seqId, 1),
+		SeqId:   atomic.AddUint64(&c.seqID, 1),
 		Command: cmd,
 	}
 	return c.proxy.Submit(req)
@@ -95,7 +95,7 @@ func (c *Client) Set(key string, val string) string {
 	}
 
 	req := &pb.Request{
-		SeqId:   atomic.AddUint64(&c.seqId, 1),
+		SeqId:   atomic.AddUint64(&c.seqID, 1),
 		Command: cmd,
 	}
 	return c.proxy.Submit(req)
@@ -108,7 +108,7 @@ func (c *Client) Del(key string) string {
 	}
 
 	req := &pb.Request{
-		SeqId:   atomic.AddUint64(&c.seqId, 1),
+		SeqId:   atomic.AddUint64(&c.seqID, 1),
 		Command: cmd,
 	}
 	return c.proxy.Submit(req)

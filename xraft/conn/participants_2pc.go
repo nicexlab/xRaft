@@ -24,8 +24,8 @@ type ResultedCommand struct {
 	committed bool
 }
 
-var FBFCmdDone request.RequestID = request.RequestID{ClientID: 67890, SeqID: 12345}
-var BatchedSlowcmdsDone request.RequestID = request.RequestID{ClientID: 12345, SeqID: 67890}
+var fbfCmdDone = request.RequestID{ClientID: 67890, SeqID: 12345}
+var batchedSlowCmdsDone = request.RequestID{ClientID: 12345, SeqID: 67890}
 
 func (t *ResultedCommand) IsCommitted() bool {
 	return t.committed
@@ -61,10 +61,10 @@ type Participants_2PC struct { // 这个结构负责client向peers的2PC过程
 
 	batchCmds *batchedFCmds
 
-	open_batch bool
+	openBatch bool
 
 	grpcAddrs   []string
-	grpcServers []*coor_grpc
+	grpcServers []*coordinatorGRPC
 }
 
 func NewParticipants_2PC(id int, kv xkv.KVStore, mergeDeep int, grpcAddrs []string) (*Participants_2PC, chan *MergeInfo, chan *pb.Request) {
@@ -73,7 +73,7 @@ func NewParticipants_2PC(id int, kv xkv.KVStore, mergeDeep int, grpcAddrs []stri
 		cmdsCache: newCmdsCache(),
 		// keyCache_acc: make(map[string]*Sepculate_Result_tx),
 		// currentSlowKey:       make(map[string]struct{}),
-		fastLogs:        NewFastLogs(),
+		fastLogs:        newFastLogs(),
 		kvStore:         kv,
 		OrderSepculateC: make(chan *MergeInfo, 1000),
 		// slowPathApplyC:       make(chan *slowcmd_commit_helper),
@@ -85,13 +85,13 @@ func NewParticipants_2PC(id int, kv xkv.KVStore, mergeDeep int, grpcAddrs []stri
 		SlowPathC:   make(chan *pb.Request, 1000),
 		batchCmds:   &batchedFCmds{mu: sync.Mutex{}, batchRequest: &pb.FBFCmd{}},
 		grpcAddrs:   grpcAddrs,
-		grpcServers: make([]*coor_grpc, len(grpcAddrs)),
-		open_batch:  false,
+		grpcServers: make([]*coordinatorGRPC, len(grpcAddrs)),
+		openBatch:   false,
 	}
 	p.isLeader.Store(0)
 	if len(grpcAddrs) != 0 {
 		p.logger.Info("Open batch for blocked cmds.")
-		p.open_batch = true
+		p.openBatch = true
 	}
 	// p.km = newKeyManager(p.PrepareKeyToFastC)
 	return p, p.OrderSepculateC, p.SlowPathC
@@ -100,16 +100,15 @@ func NewParticipants_2PC(id int, kv xkv.KVStore, mergeDeep int, grpcAddrs []stri
 func (p *Participants_2PC) executeClientCommand(cmd *pb.Command, rr *pb.RequestReply) string {
 	var res xkv.KvOpStatus
 	var err error
-	// var val string
-	var old_value string
-	var op_value string
+	var oldValue string
+	var opValue string
 	if cmd.Op == pb.PUT {
-		old_value, err = p.kvStore.PutWithOldValue(cmd.Key, cmd.Val)
+		oldValue, err = p.kvStore.PutWithOldValue(cmd.Key, cmd.Val)
 	} else if cmd.Op == pb.GET {
-		op_value, err = p.kvStore.Get(cmd.Key) // Get is no need to rollback
-		rr.Val = op_value
+		opValue, err = p.kvStore.Get(cmd.Key) // Get is no need to rollback
+		rr.Val = opValue
 	} else if cmd.Op == pb.DELETE {
-		old_value, err = p.kvStore.DeleteWithOldValue(cmd.Key)
+		oldValue, err = p.kvStore.DeleteWithOldValue(cmd.Key)
 	}
 	if err != nil {
 		res = xkv.KEY_NOT_EXIST
@@ -117,7 +116,7 @@ func (p *Participants_2PC) executeClientCommand(cmd *pb.Command, rr *pb.RequestR
 		res = xkv.SUCCEED
 	}
 	rr.OpReply = uint32(res)
-	return old_value
+	return oldValue
 }
 
 func (p *Participants_2PC) Close() { // 2pc 服务
@@ -127,7 +126,7 @@ func (p *Participants_2PC) Close() { // 2pc 服务
 func (p *Participants_2PC) merge() {
 	// p.currentSlowKey[key] = struct{}{}
 	p.logger.Info("set the state to slow")
-	start, txs := p.fastLogs.GetUncommittedTail(p.mergedeep)
+	start, txs := p.fastLogs.getUncommittedTail(p.mergedeep)
 	l := make([]*pb.Request, len(txs))
 	for i, v := range txs {
 		l[i] = v.Request
@@ -139,56 +138,56 @@ func (p *Participants_2PC) merge() {
 }
 
 func (p *Participants_2PC) FollowerMerge(start int, cmds []*pb.Request) {
-	requestIds := make([]request.RequestID, len(cmds))
+	requestIDs := make([]request.RequestID, len(cmds))
 	for i := range cmds {
-		requestIds[i] = request.GetRequestID(cmds[i])
+		requestIDs[i] = request.GetRequestID(cmds[i])
 	}
-	p.cmdsCache.batchDelete(requestIds)
-	local_start, sepculate_cmds := p.fastLogs.GetUncommittedTxs()
-	p.logger.Warnf("process a merge info: start from %v: %v, local start %v: %v", start, cmds, local_start, sepculate_cmds)
+	p.cmdsCache.batchDelete(requestIDs)
+	localStart, speculativeCmds := p.fastLogs.getUncommittedTxs()
+	p.logger.Warnf("process a merge info: start from %v: %v, local start %v: %v", start, cmds, localStart, speculativeCmds)
 	// 找到第一个日志不一样的位置，然后回滚
 
 	// 先对齐需要同步的日志
-	if local_start < start {
-		if local_start+len(sepculate_cmds) < start {
+	if localStart < start {
+		if localStart+len(speculativeCmds) < start {
 			// 此时快速日志比leader短，需要recover
 			p.logger.DPanic("need to recover")
 		} else {
-			sepculate_cmds = sepculate_cmds[start-local_start:]
-			local_start = start
+			speculativeCmds = speculativeCmds[start-localStart:]
+			localStart = start
 		}
 	} else {
-		start = local_start
-		cmds = cmds[start-local_start:]
-		min_len := len(cmds)
-		if min_len > len(sepculate_cmds) {
-			min_len = len(sepculate_cmds)
+		start = localStart
+		cmds = cmds[start-localStart:]
+		minLen := len(cmds)
+		if minLen > len(speculativeCmds) {
+			minLen = len(speculativeCmds)
 		}
-		sepculate_cmds = sepculate_cmds[:min_len]
+		speculativeCmds = speculativeCmds[:minLen]
 	}
 	k := -1
-	for i := range sepculate_cmds { // 找到第一个不相等的日志请求，从这个位置开始修复
+	for i := range speculativeCmds { // 找到第一个不相等的日志请求，从这个位置开始修复
 		if i > len(cmds) {
 			k = i
 			break
 		}
-		if request.GetRequestID(cmds[i]) != request.GetRequestID(sepculate_cmds[i].Request) {
-			p.logger.Warnf("the log is inconsistent at positions %v, expert %v, get %v", i, sepculate_cmds[i].Request.String(), cmds[i].String())
+		if request.GetRequestID(cmds[i]) != request.GetRequestID(speculativeCmds[i].Request) {
+			p.logger.Warnf("the log is inconsistent at positions %v, expert %v, get %v", i, speculativeCmds[i].Request.String(), cmds[i].String())
 			k = i
 			break
 		}
 	}
-	if k == -1 && len(cmds) > len(sepculate_cmds) {
-		k = len(sepculate_cmds)
+	if k == -1 && len(cmds) > len(speculativeCmds) {
+		k = len(speculativeCmds)
 	}
 	if k != -1 {
-		for i := k; i < len(sepculate_cmds); i++ {
-			if sepculate_cmds[i].Command.Op != pb.GET { // 找到第一个非读的请求，将其回滚
-				if sepculate_cmds[i].Command.Op == pb.PUT {
-					p.kvStore.RollbackPutWithOldValue(sepculate_cmds[i].Request.Command.Key, sepculate_cmds[i].oldVal)
+		for i := k; i < len(speculativeCmds); i++ {
+			if speculativeCmds[i].Command.Op != pb.GET { // 找到第一个非读的请求，将其回滚
+				if speculativeCmds[i].Command.Op == pb.PUT {
+					p.kvStore.RollbackPutWithOldValue(speculativeCmds[i].Request.Command.Key, speculativeCmds[i].oldVal)
 					break
-				} else if sepculate_cmds[i].Command.Op == pb.DELETE {
-					p.kvStore.RollbackDeleteWithOldValue(sepculate_cmds[i].Request.Command.Key, sepculate_cmds[i].oldVal)
+				} else if speculativeCmds[i].Command.Op == pb.DELETE {
+					p.kvStore.RollbackDeleteWithOldValue(speculativeCmds[i].Request.Command.Key, speculativeCmds[i].oldVal)
 					break
 				}
 			} else {
@@ -199,17 +198,17 @@ func (p *Participants_2PC) FollowerMerge(start int, cmds []*pb.Request) {
 			p.executeClientCommand(cmds[i].Command, &pb.RequestReply{})
 		}
 	}
-	merged_txs := make([]*ResultedCommand, len(cmds))
+	mergedTxs := make([]*ResultedCommand, len(cmds))
 	for i := range cmds {
 		// if v, ok :=  p.cmdsCache[request.GetRequestID(cmds[i])]; ok {
 		if v, ok := p.cmdsCache.get(request.GetRequestID(cmds[i])); ok {
-			merged_txs[i] = v
+			mergedTxs[i] = v
 		} else {
-			merged_txs[i] = &ResultedCommand{Request: cmds[i], committed: true}
+			mergedTxs[i] = &ResultedCommand{Request: cmds[i], committed: true}
 		}
 	}
-	p.fastLogs.FixUncommittedTxs(local_start, merged_txs)
-	p.fastLogs.PersistenceKey()
+	p.fastLogs.fixUncommittedTxs(localStart, mergedTxs)
+	p.fastLogs.clear()
 }
 
 func (p *Participants_2PC) LeaderMerge(m *MergeInfo) {
@@ -223,13 +222,13 @@ func (p *Participants_2PC) LeaderMerge(m *MergeInfo) {
 			p.commit(cmdID)
 		}
 	}
-	p.fastLogs.PersistenceKey()
+	p.fastLogs.clear()
 }
 
-func (p *Participants_2PC) WarpReplyWithConflict(rr *pb.RequestReply, conflict_reqs []*ResultedCommand) *pb.RequestReply {
-	rr.ConflictReqs = make([]*pb.RequestID, len(conflict_reqs))
-	for i := range conflict_reqs {
-		rr.ConflictReqs[i] = &pb.RequestID{SeqId: conflict_reqs[i].SeqId, ClientID: conflict_reqs[i].ClientID}
+func (p *Participants_2PC) WrapReplyWithConflict(rr *pb.RequestReply, conflictReqs []*ResultedCommand) *pb.RequestReply {
+	rr.ConflictReqs = make([]*pb.RequestID, len(conflictReqs))
+	for i := range conflictReqs {
+		rr.ConflictReqs[i] = &pb.RequestID{SeqId: conflictReqs[i].SeqId, ClientID: conflictReqs[i].ClientID}
 	}
 	return rr
 }
@@ -240,19 +239,19 @@ func (p *Participants_2PC) Prepare(req *pb.Request) *pb.RequestReply {
 	cmdID := request.GetRequestID(req)
 	res, ok := p.cmdsCache.get(cmdID)
 	if !ok {
-		oldval := p.executeClientCommand(req.Command, rr)
-		rescmd := &ResultedCommand{Request: req, oldVal: oldval, reply: rr} // 暂存这个交易
-		p.cmdsCache.insert(cmdID, rescmd)
-		if conflict_reqs := p.conflictReqs(rescmd); len(conflict_reqs) != 0 { // 如果与当前命令冲突
-			// p.logger.Debugf("conflict with %v", conflict_reqs)
+		oldVal := p.executeClientCommand(req.Command, rr)
+		resCmd := &ResultedCommand{Request: req, oldVal: oldVal, reply: rr} // 暂存这个交易
+		p.cmdsCache.insert(cmdID, resCmd)
+		if conflictReqs := p.conflictReqs(resCmd); len(conflictReqs) != 0 { // 如果与当前命令冲突
+			// p.logger.Debugf("conflict with %v", conflictReqs)
 			rr.ReqReply = uint32(pb.PREPARE_CONFLICT)
-			rr = p.WarpReplyWithConflict(rr, conflict_reqs)
+			rr = p.WrapReplyWithConflict(rr, conflictReqs)
 			// 通过慢速路径发送这个key
 		} else { // 没有检测到冲突
 			// p.logger.Debugf("process command %v without conflict", req.String())
 			rr.ReqReply = uint32(pb.PREPARE_SUCCEED)
 		}
-		p.fastLogs.Append(rescmd)
+		p.fastLogs.append(resCmd)
 		rr.Fterm = p.sm.getCurrentTerm()
 	} else {
 		rr = res.reply
@@ -290,13 +289,13 @@ func (p *Participants_2PC) AbortReq(cmdID request.RequestID, FTerm uint32) (repl
 }
 
 func (p *Participants_2PC) Propose(mess *pb.Message) *pb.MessageReply {
-	waitsync := false
+	waitSync := false
 	var rr *pb.RequestReply
 	if p.sm.fastLiveLock() {
 		// for _, seqID := range mess.CommitCmd {
 		seqID := mess.CommitCmd
-		cmdId := request.RequestID{ClientID: mess.ClientID, SeqID: seqID}
-		p.commit(cmdId)
+		cmdID := request.RequestID{ClientID: mess.ClientID, SeqID: seqID}
+		p.commit(cmdID)
 		// }
 		if mess.Request != nil {
 			rr = p.Prepare(mess.Request)
@@ -306,9 +305,9 @@ func (p *Participants_2PC) Propose(mess *pb.Message) *pb.MessageReply {
 			// leader batch the slowpath command and take a role as coordinator to send the batched cmds as the first fast cmd。
 			// p.logger.Debugf("blocked slowpath command %v", mess.Request.SeqId, mess.Request.Command.Key)
 			rr = &pb.RequestReply{}
-			if p.open_batch && p.batchCmds.batch(mess.Request) {
+			if p.openBatch && p.batchCmds.batch(mess.Request) {
 				p.logger.Debug("batch a blocked request.")
-				waitsync = true
+				waitSync = true
 				rr.ReqReply = uint32(pb.BACATCH_WHEN_BLOCK)
 			} else {
 				rr.ReqReply = uint32(pb.CURRENT_PREAPRE_FAST)
@@ -317,14 +316,14 @@ func (p *Participants_2PC) Propose(mess *pb.Message) *pb.MessageReply {
 			p.logger.Debugf("proccessing a slow request %v", mess.Request.String())
 
 			p.SlowPathC <- mess.Request // 将这个tx发送到slowpath上
-			waitsync = true
+			waitSync = true
 			rr = &pb.RequestReply{}
 			rr.ReqReply = uint32(pb.CURRENT_SLOWMODE)
 		}
 	}
 	p.sm.fastLiveUnlock()
 
-	if waitsync && p.isLeader.Load() != 0 { // 只有leader需要等待
+	if waitSync && p.isLeader.Load() != 0 { // 只有leader需要等待
 		p.logger.Info("wait to sync")
 		r := p.reqboard.WaitForMr(request.GetRequestID(mess.Request))
 		rr = r.(*pb.RequestReply)
@@ -336,10 +335,10 @@ func (p *Participants_2PC) Propose(mess *pb.Message) *pb.MessageReply {
 func (p *Participants_2PC) BecomeLeader() {
 	p.isLeader.Store(1)
 	p.logger.Debug("become a leader")
-	if p.open_batch {
+	if p.openBatch {
 		for i, addr := range p.grpcAddrs {
 			p.logger.Infof("connect to server %v", addr)
-			p.grpcServers[i] = new_coor_grpc(addr) // 开启grpcserver
+			p.grpcServers[i] = newCoordinatorGRPC(addr) // 开启grpcserver
 		}
 		p.logger.Debug("batch open.")
 	}
@@ -362,7 +361,7 @@ func (p *Participants_2PC) SetToSlow(m *MergeInfo) {
 }
 
 func (p *Participants_2PC) StartBatchCmds() {
-	p.batchCmds.startbatch(p.sm.getCurrentTerm()) // the Fterm will increase after the SetFast()
+	p.batchCmds.startBatch(p.sm.getCurrentTerm()) // the Fterm will increase after the SetFast()
 }
 
 func (p *Participants_2PC) ProcessBatchedCmds() {
@@ -370,7 +369,7 @@ func (p *Participants_2PC) ProcessBatchedCmds() {
 	cmd := p.batchCmds.down()
 	go func() {
 		for _, server := range p.grpcServers {
-			go func(s *coor_grpc) {
+			go func(s *coordinatorGRPC) {
 				s.StartFast(cmd)
 				notifyC <- struct{}{}
 			}(server)
@@ -385,7 +384,7 @@ func (p *Participants_2PC) ProcessBatchedCmds() {
 
 func (p *Participants_2PC) SetBlockedToFast() {
 	p.logger.Info("blocked to prepare Fast")
-	if p.open_batch {
+	if p.openBatch {
 		p.logger.Debug("start batch the blocked cmds.")
 		p.StartBatchCmds()
 	}
@@ -401,13 +400,13 @@ func (p *Participants_2PC) SetFast(term uint32) {
 	if !s {
 		p.logger.Warnf("change to fast term %v failed.", term)
 	} else {
-		if p.open_batch {
+		if p.openBatch {
 			p.logger.Infof("wait for the FBFCmds to be executed.")
 			if p.isLeader.Load() != 0 {
 				p.ProcessBatchedCmds() // leader process the batched cmds before start fast
 			}
-			p.reqboard.WaitForMr(FBFCmdDone) // wait for the FBFCmds be executed before start fast
-			p.reqboard.ClearID(FBFCmdDone)
+			p.reqboard.WaitForMr(fbfCmdDone) // wait for the FBFCmds be executed before start fast
+			p.reqboard.ClearID(fbfCmdDone)
 		}
 		p.logger.Infof("change to Fast with term %v", term)
 		p.sm.setFastAndUnblocked(term)
@@ -430,17 +429,17 @@ func (p *Participants_2PC) ExecuteBatchedSlowCommand(cmds []*pb.Request) {
 		p.ExecuteSlowCommand(cmd)
 	}
 	// notify that the slow cmd are all finished
-	if p.open_batch {
-		p.reqboard.InsertMr(BatchedSlowcmdsDone, struct{}{})
+	if p.openBatch {
+		p.reqboard.InsertMr(batchedSlowCmdsDone, struct{}{})
 	}
 }
 
 func (p *Participants_2PC) ExecuteFBFCmds(bcmds *pb.FBFCmd) {
 	// todo: check the state
 	p.logger.Infof("start execute FBFCmds")
-	p.reqboard.WaitForMr(BatchedSlowcmdsDone) // execute FBFcmds after the last batched slow cmds
-	p.reqboard.ClearID(BatchedSlowcmdsDone)
-	p.logger.Infof("wait BatchedSlowcmdsDone")
+	p.reqboard.WaitForMr(batchedSlowCmdsDone) // execute FBFcmds after the last batched slow cmds
+	p.reqboard.ClearID(batchedSlowCmdsDone)
+	p.logger.Infof("wait batched slow commands done")
 	for _, cmd := range bcmds.Cmds {
 		r := &pb.RequestReply{ReqReply: uint32(pb.BATCHED_FAST_SUCCEED)}
 		p.executeClientCommand(cmd.Command, r)
@@ -451,27 +450,27 @@ func (p *Participants_2PC) ExecuteFBFCmds(bcmds *pb.FBFCmd) {
 	// TODO: Append the FBFCmds to the Fast log for fault tolerance
 	// because FBFCmds is the first request processed in fast mode, it is no need to consider conflicts with it.
 	// notify that the FBFCmds are executed, so can change to fast mode
-	p.reqboard.InsertMr(FBFCmdDone, struct{}{})
+	p.reqboard.InsertMr(fbfCmdDone, struct{}{})
 
-	p.logger.Infof("InsertMe FBFCmdDone")
+	p.logger.Infof("insert fast batch commands done marker")
 }
 
 // 返回与tx相冲突的command
-func (p *Participants_2PC) conflictReqs(rescmd *ResultedCommand) []*ResultedCommand {
-	conflict_reqs := make([]*ResultedCommand, 0)
-	_, reqs := p.fastLogs.GetUncommittedTxs()
+func (p *Participants_2PC) conflictReqs(resCmd *ResultedCommand) []*ResultedCommand {
+	conflictReqs := make([]*ResultedCommand, 0)
+	_, reqs := p.fastLogs.getUncommittedTxs()
 	for i := range reqs {
 		if reqs[i].committed {
 			continue
 		}
 
-		if pb.Conflict(reqs[i].Request.Command, rescmd.Request.Command) {
-			conflict_reqs = append(conflict_reqs, reqs[i])
+		if pb.Conflict(reqs[i].Request.Command, resCmd.Request.Command) {
+			conflictReqs = append(conflictReqs, reqs[i])
 		}
 	}
 	// p.cmdsCache[cmdID] = recmd
 
-	return conflict_reqs
+	return conflictReqs
 }
 
 func (p *Participants_2PC) Ping() int64 {

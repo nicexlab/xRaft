@@ -14,21 +14,21 @@ import (
 	"syscall"
 )
 
-type clus_info struct {
-	server_address     []string
-	grpcserver_address []string
+type clusterInfo struct {
+	serverAddress     []string
+	grpcServerAddress []string
 }
 
 var (
-	runcluster = flag.Bool("s", false, "start a single peer or the cluster?")
+	runCluster = flag.Bool("s", false, "start a single peer or the cluster?")
 	peers      = flag.String("addrs", "http://127.0.0.1:7010,http://127.0.0.1:7011,http://127.0.0.1:7012", "address of raftexample")
-	grpc_peers = flag.String("gaddrs", ":8020,:8021,:8022", "address of grpc server")
+	grpcPeers  = flag.String("gaddrs", ":8020,:8021,:8022", "address of grpc server")
 
 	id = flag.Int("id", 0, "id of the replica")
 
-	grpc_addr = flag.String("gport", ":11041", "port of the grpc server")
+	grpcAddr = flag.String("gport", ":11041", "port of the grpc server")
 
-	open_batch = flag.Bool("b", false, "batch the cmds when server is blocked to fast")
+	enableBatch = flag.Bool("b", false, "batch the cmds when server is blocked to fast")
 )
 
 func create_pprof() *os.File {
@@ -56,65 +56,71 @@ func stop_pprof(f *os.File) {
 	}
 }
 
+func buildBatchGRPCAddrs(peerAddrs []string, grpcPorts []string) ([]string, error) {
+	if len(grpcPorts) != len(peerAddrs) {
+		return nil, fmt.Errorf("batch mode requires one grpc port for each raft peer")
+	}
+
+	serverGRPCAddrs := make([]string, len(peerAddrs))
+	for i := range peerAddrs {
+		peerURL, err := url.Parse(peerAddrs[i])
+		if err != nil {
+			return nil, fmt.Errorf("parse peer URL %q: %w", peerAddrs[i], err)
+		}
+		serverGRPCAddrs[i] = fmt.Sprintf("%s%s", peerURL.Hostname(), grpcPorts[i])
+	}
+	return serverGRPCAddrs, nil
+}
+
 // go run main.go -addrs http://192.168.0.203:7010,http://192.168.0.204:7010,http://192.168.0.206:7010 -id
 // 开启batch的运行： go run main.go -b -addrs http://192.168.0.203:7010,http://192.168.0.204:7010,http://192.168.0.206:7010 -gport :11041,:11041,:11041 -id 0
 func main() {
 	flag.Parse()
 
-	self_gports := *grpc_addr
+	selfGRPCPort := *grpcAddr
 
 	addrs := strings.Split(*peers, ",")
-	servers_gaddrs := make([]string, len(addrs))
-	if *open_batch {
-		gports := strings.Split(*grpc_addr, ",")
-		if len(gports) != len(addrs) {
-			log.Fatalf("Error open batch, must provide grpc port for each server")
+	var serverGRPCAddrs []string
+	if *enableBatch {
+		gports := strings.Split(*grpcAddr, ",")
+		if *id < 0 || *id >= len(gports) {
+			log.Fatalf("replica id %d is outside grpc port list of length %d", *id, len(gports))
 		}
-		for i := range addrs {
-			url, err := url.Parse(addrs[i])
-			if err != nil {
-				fmt.Println("Error parsing URL:", err)
-				return
-			}
-			servers_gaddrs[i] = fmt.Sprintf("%s%s", url.Hostname(), gports[i])
+		var err error
+		serverGRPCAddrs, err = buildBatchGRPCAddrs(addrs, gports)
+		if err != nil {
+			log.Fatal(err)
 		}
-		self_gports = gports[*id]
+		selfGRPCPort = gports[*id]
 	}
 
-	if !*runcluster { // 默认配置在本地启动
-		clus_info := &clus_info{
-			server_address:     strings.Split(*peers, ","),
-			grpcserver_address: strings.Split(*grpc_peers, ","),
+	if !*runCluster { // 默认配置在本地启动
+		cluster := &clusterInfo{
+			serverAddress:     strings.Split(*peers, ","),
+			grpcServerAddress: strings.Split(*grpcPeers, ","),
 		}
-		number := len(clus_info.grpcserver_address)
-		if number != len(clus_info.server_address) {
+		number := len(cluster.grpcServerAddress)
+		if number != len(cluster.serverAddress) {
 			log.Fatal("flag error")
+		}
+		var fastBatchAddrs []string
+		if *enableBatch {
+			fastBatchAddrs = cluster.grpcServerAddress
 		}
 		states := make([]*xraft.StateMachine, number)
 		for i := range states {
-			if *open_batch {
-				stat, close_peer := xraft.RunStateMachine(clus_info.server_address, clus_info.grpcserver_address[i], i+1, clus_info.grpcserver_address)
-				states[i] = stat
-				defer close_peer()
-			} else {
-				stat, close_peer := xraft.RunStateMachine(clus_info.server_address, clus_info.grpcserver_address[i], i+1, nil)
-				states[i] = stat
-				defer close_peer()
-			}
+			stat, closePeer := xraft.RunStateMachine(cluster.serverAddress, cluster.grpcServerAddress[i], i+1, fastBatchAddrs)
+			states[i] = stat
+			defer closePeer()
 		}
 	} else {
-		clus_info := &clus_info{
-			server_address: strings.Split(*peers, ","),
+		cluster := &clusterInfo{
+			serverAddress: strings.Split(*peers, ","),
 		}
-		fmt.Printf("%v\n", clus_info.server_address)
-		fmt.Printf("%v\n", servers_gaddrs)
-		if *open_batch {
-			_, close_peer := xraft.RunStateMachine(clus_info.server_address, self_gports, *id+1, servers_gaddrs)
-			defer close_peer()
-		} else {
-			_, close_peer := xraft.RunStateMachine(clus_info.server_address, self_gports, *id+1, nil)
-			defer close_peer()
-		}
+		fmt.Printf("%v\n", cluster.serverAddress)
+		fmt.Printf("%v\n", serverGRPCAddrs)
+		_, closePeer := xraft.RunStateMachine(cluster.serverAddress, selfGRPCPort, *id+1, serverGRPCAddrs)
+		defer closePeer()
 	}
 
 	c := make(chan os.Signal, 1)

@@ -7,12 +7,9 @@ import (
 )
 
 func TestPing(t *testing.T) {
-	clus_info := &clus_info{
-		grpcserver_address: []string{"192.168.0.203:11041", "192.168.0.204:11041", "192.168.0.206:11041"},
-		// grpcserver_address: []string{":8020", ":8021", ":8022"},
-	}
-	client := xraft.NewGrpcClient(clus_info.grpcserver_address, id)
-	go bench_server(fmt.Sprintf(":%v", 9360+id), client)
+	cluster := newClusterInfo(defaultClientGRPCAddrs)
+	client := xraft.NewGrpcClient(cluster.grpcServerAddress, id)
+	go benchServer(fmt.Sprintf(":%v", 9360+id), client)
 	defer func() {
 		fmt.Printf("client %v:", id)
 		client.Static()
@@ -22,12 +19,9 @@ func TestPing(t *testing.T) {
 }
 
 func TestPingAndWrite(t *testing.T) {
-	clus_info := &clus_info{
-		grpcserver_address: []string{"192.168.0.203:11041", "192.168.0.204:11041", "192.168.0.206:11041"},
-		// grpcserver_address: []string{":8020", ":8021", ":8022"},
-	}
-	client := xraft.NewGrpcClient(clus_info.grpcserver_address, id)
-	go bench_server(fmt.Sprintf(":%v", 9360+id), client)
+	cluster := newClusterInfo(defaultClientGRPCAddrs)
+	client := xraft.NewGrpcClient(cluster.grpcServerAddress, id)
+	go benchServer(fmt.Sprintf(":%v", 9360+id), client)
 	defer func() {
 		fmt.Printf("client %v:", id)
 		client.Static()

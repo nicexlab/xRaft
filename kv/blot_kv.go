@@ -77,28 +77,27 @@ func (s *BoltStore) Delete(key string) error {
 }
 
 func (s *BoltStore) PutWithOldValue(key string, value string) (string, error) {
-	var old_value []byte
+	var oldValue []byte
 	err := s.db.Update(func(tx *bolt.Tx) error {
 		bucket := tx.Bucket([]byte(s.bucketName))
-		old_value = bucket.Get([]byte(key))
+		oldValue = bucket.Get([]byte(key))
 		return bucket.Put([]byte(key), []byte(value))
 	})
-	if old_value == nil {
+	if oldValue == nil {
 		return "", err
 	}
-	return string(old_value), err
+	return string(oldValue), err
 }
 
-func (s *BoltStore) RollbackPutWithOldValue(key string, old_value string) error {
-	if len(old_value) == 0 {
+func (s *BoltStore) RollbackPutWithOldValue(key string, oldValue string) error {
+	if len(oldValue) == 0 {
 		return s.Delete(key)
-	} else {
-		return s.Put(key, old_value)
 	}
+	return s.Put(key, oldValue)
 }
 
-func (s *BoltStore) RollbackDeleteWithOldValue(key string, old_value string) error {
-	return s.Put(key, old_value)
+func (s *BoltStore) RollbackDeleteWithOldValue(key string, oldValue string) error {
+	return s.Put(key, oldValue)
 }
 
 func (s *BoltStore) DeleteWithOldValue(key string) (string, error) {
